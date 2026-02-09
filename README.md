@@ -1,5 +1,9 @@
 # fc2-systemdetection
 
+[![CI](https://github.com/coconutbird/fc2-systemdetection/actions/workflows/ci.yml/badge.svg)](https://github.com/coconutbird/fc2-systemdetection/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/coconutbird/fc2-systemdetection)](https://github.com/coconutbird/fc2-systemdetection/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Drop-in replacement for Far Cry 2's `systemdetection.dll`.
 
 ## Why?
