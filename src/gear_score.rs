@@ -52,7 +52,7 @@ unsafe extern "thiscall" fn gear_score_get_score(
     param: i32,
     confidence_out: *mut f32,
 ) -> f32 {
-    if score_type < 0 || score_type >= 2 {
+    if !(0..2).contains(&score_type) {
         return 0.0;
     }
 
@@ -77,7 +77,7 @@ unsafe extern "thiscall" fn gear_score_compute_score(
     score_type: i32,
     _param: i32,
 ) -> i32 {
-    if score_type < 0 || score_type >= 2 {
+    if !(0..2).contains(&score_type) {
         return score_type;
     }
 
@@ -88,6 +88,12 @@ unsafe extern "thiscall" fn gear_score_compute_score(
     (*this).confidence[idx] = 1.0;
 
     score_type
+}
+
+impl Default for GearScore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GearScore {

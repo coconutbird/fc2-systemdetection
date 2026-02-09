@@ -72,7 +72,7 @@ unsafe extern "thiscall" fn gear_graphics_get_desktop_resolution(
         *height = (rect.bottom - rect.top) as u32;
     }
 
-    (rect.bottom - rect.top) as i32
+    rect.bottom - rect.top
 }
 
 impl GearGraphics {

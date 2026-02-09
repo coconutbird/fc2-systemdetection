@@ -132,6 +132,12 @@ unsafe extern "thiscall" fn gear_hardware_get_audio(this: *mut GearHardware) -> 
     (*this).m_audio
 }
 
+impl Default for GearHardware {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GearHardware {
     pub fn new() -> Self {
         println!("systemdetection: Initializing GearHardware");

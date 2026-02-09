@@ -140,7 +140,7 @@ impl GearCPU {
             logical_count = sys_info.dwNumberOfProcessors;
         }
 
-        let physical_count = ((logical_count + 1) / 2).max(1);
+        let physical_count = logical_count.div_ceil(2).max(1);
         (logical_count.max(1), physical_count, 1)
     }
 

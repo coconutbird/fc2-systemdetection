@@ -14,6 +14,9 @@ use windows::Win32::Foundation::{BOOL, HMODULE, TRUE};
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 /// DLL entry point
+///
+/// # Safety
+/// Called by Windows when the DLL is loaded/unloaded.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllMain(
@@ -40,17 +43,15 @@ unsafe fn init_console() {
     use windows::Win32::System::Console::{AllocConsole, SetConsoleTitleA};
 
     let _ = AllocConsole();
-    let _ = SetConsoleTitleA(PCSTR::from_raw(b"FC2 SystemDetection\0".as_ptr()));
+    let _ = SetConsoleTitleA(PCSTR::from_raw(c"FC2 SystemDetection".as_ptr() as *const u8));
 
     extern "C" {
         fn freopen(filename: *const i8, mode: *const i8, stream: *mut c_void) -> *mut c_void;
         fn __acrt_iob_func(index: u32) -> *mut c_void;
     }
 
-    let conout = b"CONOUT$\0".as_ptr() as *const i8;
-    let mode_w = b"w\0".as_ptr() as *const i8;
-    freopen(conout, mode_w, __acrt_iob_func(1)); // stdout
-    freopen(conout, mode_w, __acrt_iob_func(2)); // stderr
+    freopen(c"CONOUT$".as_ptr(), c"w".as_ptr(), __acrt_iob_func(1)); // stdout
+    freopen(c"CONOUT$".as_ptr(), c"w".as_ptr(), __acrt_iob_func(2)); // stderr
 }
 
 /// Global singleton for GearHardware
