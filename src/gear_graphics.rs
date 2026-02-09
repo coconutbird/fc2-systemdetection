@@ -77,7 +77,8 @@ unsafe extern "thiscall" fn gear_graphics_get_desktop_resolution(
 
 impl GearGraphics {
     pub fn new() -> Self {
-        println!("systemdetection: Using safe graphics defaults (skipping D3D detection)");
+        #[cfg(debug_assertions)]
+        println!("systemdetection: Initializing GearGraphics");
         GearGraphics {
             vtable: &GEAR_GRAPHICS_VTABLE,
         }

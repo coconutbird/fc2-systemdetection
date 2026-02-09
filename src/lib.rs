@@ -10,9 +10,7 @@ pub use gear_score::GearScore;
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
-use windows::core::PCSTR;
 use windows::Win32::Foundation::{BOOL, HMODULE, TRUE};
-use windows::Win32::System::Console::{AllocConsole, SetConsoleTitleA};
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 /// DLL entry point
@@ -24,16 +22,23 @@ pub unsafe extern "system" fn DllMain(
     _lpv_reserved: *mut c_void,
 ) -> BOOL {
     if fdw_reason == DLL_PROCESS_ATTACH {
-        init_console();
-        println!("===========================================");
-        println!("  Far Cry 2 - systemdetection.dll replacement");
-        println!("===========================================");
+        #[cfg(debug_assertions)]
+        {
+            init_console();
+            println!("===========================================");
+            println!("  Far Cry 2 - systemdetection.dll replacement");
+            println!("===========================================");
+        }
     }
     TRUE
 }
 
 /// Initialize console for debug output
+#[cfg(debug_assertions)]
 unsafe fn init_console() {
+    use windows::core::PCSTR;
+    use windows::Win32::System::Console::{AllocConsole, SetConsoleTitleA};
+
     let _ = AllocConsole();
     let _ = SetConsoleTitleA(PCSTR::from_raw(b"FC2 SystemDetection\0".as_ptr()));
 

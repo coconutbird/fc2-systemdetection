@@ -86,7 +86,7 @@ unsafe extern "thiscall" fn gear_cpu_get_cpu_info_access(
 
 impl GearCPU {
     pub fn new() -> Self {
-        println!("systemdetection: Detecting CPU info (fixed version)");
+        println!("systemdetection: Detecting CPU info");
 
         let (logical, physical, packages) = unsafe { Self::get_cpu_topology_fixed() };
         let cpu_mhz = unsafe { Self::get_cpu_mhz() };
