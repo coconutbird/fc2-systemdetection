@@ -1,0 +1,27 @@
+[package]
+name = "systemdetection"
+version = "0.1.0"
+edition = "2021"
+description = "Far Cry 2 systemdetection.dll drop-in replacement"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "systemdetection"
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_SystemServices",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+]}
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+
