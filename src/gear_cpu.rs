@@ -15,6 +15,7 @@
 //!
 //! VTable: [destructor, GetCpuInfoAccess]
 
+use cppvtable::proc::{cppvtable, cppvtable_impl};
 use std::ffi::c_void;
 use windows::core::PCSTR;
 use windows::Win32::System::Registry::{
@@ -43,45 +44,44 @@ impl Default for GearBasicString {
     }
 }
 
+/// IGearCPU interface definition
+#[cppvtable]
+pub trait IGearCPU {
+    fn destructor(&mut self, flags: u8) -> *mut c_void;
+    fn get_cpu_info_access(&mut self) -> *mut GearBasicString;
+}
+
 /// GearCPU class with fixed topology detection
 #[repr(C)]
 pub struct GearCPU {
-    vtable: *const GearCPUVTable,     // offset 0x00
-    _base_field: u32,                 // offset 0x04 (base class)
-    cpu_freq_low: u32,                // offset 0x08 (MHz * 1000000)
-    cpu_freq_high: u32,               // offset 0x0C
-    pub num_logical: u32,             // offset 0x10
-    pub num_physical: u32,            // offset 0x14
-    pub num_packages: u32,            // offset 0x18
-    pub vendor_id: u32,               // offset 0x1C (4=Intel, 1=AMD)
-    pub simd_level: u32,              // offset 0x20
-    _reserved: u32,                   // offset 0x24
-    cpu_info_string: GearBasicString, // offset 0x28 (this + 10 DWORDs = 40 bytes)
+    pub vtable_i_gear_cpu: *const IGearCPUVTable, // offset 0x00
+    _base_field: u32,                             // offset 0x04 (base class)
+    cpu_freq_low: u32,                            // offset 0x08 (MHz * 1000000)
+    cpu_freq_high: u32,                           // offset 0x0C
+    pub num_logical: u32,                         // offset 0x10
+    pub num_physical: u32,                        // offset 0x14
+    pub num_packages: u32,                        // offset 0x18
+    pub vendor_id: u32,                           // offset 0x1C (4=Intel, 1=AMD)
+    pub simd_level: u32,                          // offset 0x20
+    _reserved: u32,                               // offset 0x24
+    cpu_info_string: GearBasicString,             // offset 0x28 (this + 10 DWORDs = 40 bytes)
 }
 
-#[repr(C)]
-struct GearCPUVTable {
-    destructor: unsafe extern "thiscall" fn(*mut GearCPU, u8) -> *mut c_void,
-    get_cpu_info_access: unsafe extern "thiscall" fn(*mut GearCPU) -> *mut GearBasicString,
-}
-
-static GEAR_CPU_VTABLE: GearCPUVTable = GearCPUVTable {
-    destructor: gear_cpu_destructor,
-    get_cpu_info_access: gear_cpu_get_cpu_info_access,
-};
-
-unsafe extern "thiscall" fn gear_cpu_destructor(this: *mut GearCPU, flags: u8) -> *mut c_void {
-    if flags & 1 != 0 {
-        let _ = Box::from_raw(this);
+#[cppvtable_impl(IGearCPU)]
+impl GearCPU {
+    fn destructor(&mut self, flags: u8) -> *mut c_void {
+        if flags & 1 != 0 {
+            unsafe {
+                let _ = Box::from_raw(self as *mut Self);
+            }
+        }
+        self as *mut Self as *mut c_void
     }
-    this as *mut c_void
-}
 
-/// GetCpuInfoAccess - returns pointer to cpu_info_string (this + 40)
-unsafe extern "thiscall" fn gear_cpu_get_cpu_info_access(
-    this: *mut GearCPU,
-) -> *mut GearBasicString {
-    &mut (*this).cpu_info_string as *mut GearBasicString
+    /// GetCpuInfoAccess - returns pointer to cpu_info_string (this + 40)
+    fn get_cpu_info_access(&mut self) -> *mut GearBasicString {
+        &mut self.cpu_info_string as *mut GearBasicString
+    }
 }
 
 impl GearCPU {
@@ -97,7 +97,7 @@ impl GearCPU {
         );
 
         GearCPU {
-            vtable: &GEAR_CPU_VTABLE,
+            vtable_i_gear_cpu: Self::VTABLE_I_GEAR_CPU,
             _base_field: 0,
             cpu_freq_low: cpu_mhz.saturating_mul(1_000_000),
             cpu_freq_high: 0,

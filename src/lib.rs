@@ -70,6 +70,7 @@ pub unsafe extern "C" fn GetHardwareInstance() -> *mut GearHardware {
         println!("systemdetection: Creating GearHardware instance");
         Box::new(GearHardware::new())
     });
+
     hardware.as_ref() as *const GearHardware as *mut GearHardware
 }
 
@@ -83,5 +84,6 @@ pub unsafe extern "C" fn GetScoreInstance() -> *mut GearScore {
         println!("systemdetection: Creating GearScore instance");
         Box::new(GearScore::new())
     });
+
     score.as_ref() as *const GearScore as *mut GearScore
 }

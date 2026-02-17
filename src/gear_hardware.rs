@@ -14,6 +14,7 @@
 
 use super::gear_cpu::GearCPU;
 use super::gear_graphics::GearGraphics;
+use cppvtable::proc::{cppvtable, cppvtable_impl};
 use std::ffi::c_void;
 use std::ptr::null_mut;
 
@@ -39,97 +40,85 @@ pub struct GearAudio {
     _vtable: *const c_void,
 }
 
+/// IGearHardware interface definition
+#[cppvtable]
+pub trait IGearHardware {
+    fn destructor(&mut self, flags: u8) -> *mut c_void;
+    fn get_cpu(&mut self) -> *mut GearCPU;
+    fn get_logical_disks(&mut self) -> *mut GearLogicalDisks;
+    fn get_memory(&mut self) -> *mut GearMemory;
+    fn get_network(&mut self) -> *mut GearNetwork;
+    fn get_os(&mut self) -> *mut GearOS;
+    fn get_graphics(&mut self) -> *mut GearGraphics;
+    fn get_audio(&mut self) -> *mut GearAudio;
+}
+
 /// GearHardware class (32 bytes)
 #[repr(C)]
 pub struct GearHardware {
-    vtable: *const GearHardwareVTable,      // offset 0x00
-    m_cpu: *mut GearCPU,                    // offset 0x04
-    m_logical_disks: *mut GearLogicalDisks, // offset 0x08
-    m_memory: *mut GearMemory,              // offset 0x0C
-    m_network: *mut GearNetwork,            // offset 0x10
-    m_os: *mut GearOS,                      // offset 0x14
-    m_graphics: *mut GearGraphics,          // offset 0x18
-    m_audio: *mut GearAudio,                // offset 0x1C
+    pub vtable_i_gear_hardware: *const IGearHardwareVTable, // offset 0x00
+    m_cpu: *mut GearCPU,                                    // offset 0x04
+    m_logical_disks: *mut GearLogicalDisks,                 // offset 0x08
+    m_memory: *mut GearMemory,                              // offset 0x0C
+    m_network: *mut GearNetwork,                            // offset 0x10
+    m_os: *mut GearOS,                                      // offset 0x14
+    m_graphics: *mut GearGraphics,                          // offset 0x18
+    m_audio: *mut GearAudio,                                // offset 0x1C
 }
 
 unsafe impl Send for GearHardware {}
 unsafe impl Sync for GearHardware {}
 
-#[repr(C)]
-struct GearHardwareVTable {
-    destructor: unsafe extern "thiscall" fn(*mut GearHardware, u8) -> *mut c_void,
-    get_cpu: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearCPU,
-    get_logical_disks: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearLogicalDisks,
-    get_memory: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearMemory,
-    get_network: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearNetwork,
-    get_os: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearOS,
-    get_graphics: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearGraphics,
-    get_audio: unsafe extern "thiscall" fn(*mut GearHardware) -> *mut GearAudio,
-}
-
-static GEAR_HARDWARE_VTABLE: GearHardwareVTable = GearHardwareVTable {
-    destructor: gear_hardware_destructor,
-    get_cpu: gear_hardware_get_cpu,
-    get_logical_disks: gear_hardware_get_logical_disks,
-    get_memory: gear_hardware_get_memory,
-    get_network: gear_hardware_get_network,
-    get_os: gear_hardware_get_os,
-    get_graphics: gear_hardware_get_graphics,
-    get_audio: gear_hardware_get_audio,
-};
-
-unsafe extern "thiscall" fn gear_hardware_destructor(
-    this: *mut GearHardware,
-    flags: u8,
-) -> *mut c_void {
-    if !(*this).m_cpu.is_null() {
-        let _ = Box::from_raw((*this).m_cpu);
+#[cppvtable_impl(IGearHardware)]
+impl GearHardware {
+    fn destructor(&mut self, flags: u8) -> *mut c_void {
+        unsafe {
+            if !self.m_cpu.is_null() {
+                let _ = Box::from_raw(self.m_cpu);
+            }
+            if !self.m_graphics.is_null() {
+                let _ = Box::from_raw(self.m_graphics);
+            }
+            if flags & 1 != 0 {
+                let _ = Box::from_raw(self as *mut Self);
+            }
+        }
+        self as *mut Self as *mut c_void
     }
-    if !(*this).m_graphics.is_null() {
-        let _ = Box::from_raw((*this).m_graphics);
+
+    fn get_cpu(&mut self) -> *mut GearCPU {
+        if self.m_cpu.is_null() {
+            self.m_cpu = Box::into_raw(Box::new(GearCPU::new()));
+        }
+        self.m_cpu
     }
-    if flags & 1 != 0 {
-        let _ = Box::from_raw(this);
+
+    fn get_logical_disks(&mut self) -> *mut GearLogicalDisks {
+        self.m_logical_disks
     }
-    this as *mut c_void
-}
 
-unsafe extern "thiscall" fn gear_hardware_get_cpu(this: *mut GearHardware) -> *mut GearCPU {
-    if (*this).m_cpu.is_null() {
-        (*this).m_cpu = Box::into_raw(Box::new(GearCPU::new()));
+    fn get_memory(&mut self) -> *mut GearMemory {
+        self.m_memory
     }
-    (*this).m_cpu
-}
 
-unsafe extern "thiscall" fn gear_hardware_get_logical_disks(
-    this: *mut GearHardware,
-) -> *mut GearLogicalDisks {
-    (*this).m_logical_disks
-}
-
-unsafe extern "thiscall" fn gear_hardware_get_memory(this: *mut GearHardware) -> *mut GearMemory {
-    (*this).m_memory
-}
-
-unsafe extern "thiscall" fn gear_hardware_get_network(this: *mut GearHardware) -> *mut GearNetwork {
-    (*this).m_network
-}
-
-unsafe extern "thiscall" fn gear_hardware_get_os(this: *mut GearHardware) -> *mut GearOS {
-    (*this).m_os
-}
-
-unsafe extern "thiscall" fn gear_hardware_get_graphics(
-    this: *mut GearHardware,
-) -> *mut GearGraphics {
-    if (*this).m_graphics.is_null() {
-        (*this).m_graphics = Box::into_raw(Box::new(GearGraphics::new()));
+    fn get_network(&mut self) -> *mut GearNetwork {
+        self.m_network
     }
-    (*this).m_graphics
-}
 
-unsafe extern "thiscall" fn gear_hardware_get_audio(this: *mut GearHardware) -> *mut GearAudio {
-    (*this).m_audio
+    fn get_os(&mut self) -> *mut GearOS {
+        self.m_os
+    }
+
+    fn get_graphics(&mut self) -> *mut GearGraphics {
+        if self.m_graphics.is_null() {
+            self.m_graphics = Box::into_raw(Box::new(GearGraphics::new()));
+        }
+        self.m_graphics
+    }
+
+    fn get_audio(&mut self) -> *mut GearAudio {
+        self.m_audio
+    }
 }
 
 impl Default for GearHardware {
@@ -142,7 +131,7 @@ impl GearHardware {
     pub fn new() -> Self {
         println!("systemdetection: Initializing GearHardware");
         GearHardware {
-            vtable: &GEAR_HARDWARE_VTABLE,
+            vtable_i_gear_hardware: Self::VTABLE_I_GEAR_HARDWARE,
             m_cpu: null_mut(),
             m_logical_disks: null_mut(),
             m_memory: null_mut(),

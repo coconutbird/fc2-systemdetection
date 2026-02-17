@@ -3,6 +3,31 @@
 version = 4
 
 [[package]]
+name = "cppvtable"
+version = "0.1.0"
+source = "git+https://github.com/coconutbird/cppvtable.git#12566c76b6566dcd47114e726ceddf70472c61cb"
+dependencies = [
+ "cppvtable-macro",
+ "paste",
+]
+
+[[package]]
+name = "cppvtable-macro"
+version = "0.1.0"
+source = "git+https://github.com/coconutbird/cppvtable.git#12566c76b6566dcd47114e726ceddf70472c61cb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22,9 +47,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.114"
+version = "2.0.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4d107df263a3013ef9b1879b0df87d706ff80f65a86ea879bd9c31f9b307c2a"
+checksum = "3df424c70518695237746f84cede799c9c58fcb37450d7b23716568cc8bc69cb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -35,14 +60,15 @@ dependencies = [
 name = "systemdetection"
 version = "0.1.0"
 dependencies = [
+ "cppvtable",
  "windows",
 ]
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.23"
+version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "537dd038a89878be9b64dd4bd1b260315c1bb94f4d784956b81e27a088d9a09e"
+checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "windows"
