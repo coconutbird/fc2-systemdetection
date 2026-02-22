@@ -12,8 +12,8 @@
 //!
 //! VTable: [destructor, GetCpu, GetLogicalDisks, GetMemory, GetNetwork, GetOS, GetGraphics, GetAudio]
 
-use super::gear_cpu::GearCPU;
-use super::gear_graphics::GearGraphics;
+use super::cpu::GearCPU;
+use super::graphics::GearGraphics;
 use cppvtable::proc::{cppvtable, cppvtable_impl};
 use std::ffi::c_void;
 use std::ptr::null_mut;

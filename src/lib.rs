@@ -1,12 +1,9 @@
 //! Far Cry 2 systemdetection.dll drop-in replacement
 
-mod gear_cpu;
-mod gear_graphics;
-mod gear_hardware;
-mod gear_score;
+mod gear;
 
-pub use gear_hardware::GearHardware;
-pub use gear_score::GearScore;
+pub use gear::GearHardware;
+pub use gear::GearScore;
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -24,18 +21,19 @@ pub unsafe extern "system" fn DllMain(
     fdw_reason: u32,
     _lpv_reserved: *mut c_void,
 ) -> i32 {
-    unsafe {
-        if fdw_reason == DLL_PROCESS_ATTACH {
-            #[cfg(debug_assertions)]
-            {
-                init_console();
-                println!("===========================================");
-                println!("  Far Cry 2 - systemdetection.dll replacement");
-                println!("===========================================");
-            }
+    if fdw_reason == DLL_PROCESS_ATTACH {
+        #[cfg(debug_assertions)]
+        unsafe {
+            init_console();
         }
-        1 // TRUE
+        #[cfg(debug_assertions)]
+        {
+            println!("===========================================");
+            println!("  Far Cry 2 - systemdetection.dll replacement");
+            println!("===========================================");
+        }
     }
+    1 // TRUE
 }
 
 /// Initialize console for debug output
