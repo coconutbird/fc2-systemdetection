@@ -17,14 +17,14 @@
 
 use cppvtable::proc::{cppvtable, cppvtable_impl};
 use std::ffi::c_void;
-use windows::core::PCSTR;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ,
+    HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExA, RegQueryValueExA,
 };
 use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask, SetThreadAffinityMask,
 };
+use windows::core::PCSTR;
 
 /// GearBasicString - simplified string class at offset 0x28 of GearCPU
 #[repr(C)]
@@ -114,65 +114,69 @@ impl GearCPU {
     /// Fixed CPU topology detection
     /// Key fix: `while (mask != 0 && mask <= system_affinity)` instead of `while (1 << i)`
     unsafe fn get_cpu_topology_fixed() -> (u32, u32, u32) {
-        let mut process_affinity: usize = 0;
-        let mut system_affinity: usize = 0;
+        unsafe {
+            let mut process_affinity: usize = 0;
+            let mut system_affinity: usize = 0;
 
-        let process = GetCurrentProcess();
-        let _ = GetProcessAffinityMask(process, &mut process_affinity, &mut system_affinity);
+            let process = GetCurrentProcess();
+            let _ = GetProcessAffinityMask(process, &mut process_affinity, &mut system_affinity);
 
-        let mut logical_count = 0u32;
-        let mut mask: usize = 1;
-        let thread = GetCurrentThread();
+            let mut logical_count = 0u32;
+            let mut mask: usize = 1;
+            let thread = GetCurrentThread();
 
-        // Fixed: proper bounds checking
-        while mask != 0 && mask <= system_affinity {
-            if SetThreadAffinityMask(thread, mask) != 0 {
-                logical_count += 1;
+            // Fixed: proper bounds checking
+            while mask != 0 && mask <= system_affinity {
+                if SetThreadAffinityMask(thread, mask) != 0 {
+                    logical_count += 1;
+                }
+                mask = mask.wrapping_shl(1);
             }
-            mask = mask.wrapping_shl(1);
+
+            let _ = SetThreadAffinityMask(thread, process_affinity);
+
+            if logical_count == 0 {
+                let mut sys_info: SYSTEM_INFO = std::mem::zeroed();
+                GetSystemInfo(&mut sys_info);
+                logical_count = sys_info.dwNumberOfProcessors;
+            }
+
+            let physical_count = logical_count.div_ceil(2).max(1);
+            (logical_count.max(1), physical_count, 1)
         }
-
-        let _ = SetThreadAffinityMask(thread, process_affinity);
-
-        if logical_count == 0 {
-            let mut sys_info: SYSTEM_INFO = std::mem::zeroed();
-            GetSystemInfo(&mut sys_info);
-            logical_count = sys_info.dwNumberOfProcessors;
-        }
-
-        let physical_count = logical_count.div_ceil(2).max(1);
-        (logical_count.max(1), physical_count, 1)
     }
 
     unsafe fn get_cpu_mhz() -> u32 {
-        let key_path = b"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0";
-        let value_name = b"~MHz\0";
-        let mut hkey = std::mem::zeroed();
+        unsafe {
+            let key_path = b"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0";
+            let value_name = b"~MHz\0";
+            let mut hkey = std::mem::zeroed();
 
-        if RegOpenKeyExA(
-            HKEY_LOCAL_MACHINE,
-            PCSTR::from_raw(key_path.as_ptr()),
-            Some(0),
-            KEY_READ,
-            &mut hkey,
-        )
-        .is_ok()
-        {
-            let mut mhz: u32 = 0;
-            let mut size = 4u32;
-            let _ = RegQueryValueExA(
-                hkey,
-                PCSTR::from_raw(value_name.as_ptr()),
-                None,
-                None,
-                Some(&mut mhz as *mut u32 as *mut u8),
-                Some(&mut size),
-            );
-            let _ = RegCloseKey(hkey);
-            if mhz > 0 {
-                return mhz;
+            if RegOpenKeyExA(
+                HKEY_LOCAL_MACHINE,
+                PCSTR::from_raw(key_path.as_ptr()),
+                Some(0),
+                KEY_READ,
+                &mut hkey,
+            )
+            .is_ok()
+            {
+                let mut mhz: u32 = 0;
+                let mut size = 4u32;
+                let _ = RegQueryValueExA(
+                    hkey,
+                    PCSTR::from_raw(value_name.as_ptr()),
+                    None,
+                    None,
+                    Some(&mut mhz as *mut u32 as *mut u8),
+                    Some(&mut size),
+                );
+                let _ = RegCloseKey(hkey);
+                if mhz > 0 {
+                    return mhz;
+                }
             }
+            3000
         }
-        3000
     }
 }

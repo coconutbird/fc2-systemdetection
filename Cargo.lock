@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "cargo-husky"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b02b629252fe8ef6460461409564e2c21d0c8e77e0944f3d189ff06c4e932ad"
+
+[[package]]
 name = "cppvtable"
 version = "0.1.0"
 source = "git+https://github.com/coconutbird/cppvtable.git#44f80c05fa7a2a7dc39da4bbc3a43c2a08828911"
@@ -60,6 +66,7 @@ dependencies = [
 name = "systemdetection"
 version = "0.1.0"
 dependencies = [
+ "cargo-husky",
  "cppvtable",
  "windows",
 ]
