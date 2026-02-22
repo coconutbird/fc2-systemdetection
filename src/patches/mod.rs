@@ -39,6 +39,7 @@ mod signatures {
 }
 
 /// Cached addresses from signature scans (found before patching)
+#[allow(dead_code)]
 struct PatchAddresses {
     jackal_tapes: Option<usize>,
     devmode: Option<usize>,
@@ -140,7 +141,7 @@ pub fn apply_patches() {
 
     // Now apply patches using the cached addresses
     apply_jackal_tapes_fix(&addrs);
-    apply_no_blinking_items(&addrs);
+    // apply_no_blinking_items(&addrs);
     apply_devmode_unlock(&addrs);
     apply_predecessor_tapes_unlock(&addrs);
     apply_machetes_unlock(&addrs);
@@ -177,6 +178,7 @@ fn apply_jackal_tapes_fix(addrs: &PatchAddresses) {
 /// Visual: No Blinking Items - Remove highlight blinking on interactables
 ///
 /// Patches string literals to break the shader lookup, disabling the blinking effect.
+#[allow(dead_code)]
 fn apply_no_blinking_items(addrs: &PatchAddresses) {
     // Patch "Mesh_Highlight" - change '_' to '.'
     if let Some(addr) = addrs.mesh_highlight {
