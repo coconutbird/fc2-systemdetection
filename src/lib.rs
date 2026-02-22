@@ -1,6 +1,7 @@
 //! Far Cry 2 systemdetection.dll drop-in replacement
 
 mod gear;
+mod patches;
 
 pub use gear::GearHardware;
 pub use gear::GearScore;
@@ -32,6 +33,9 @@ pub unsafe extern "system" fn DllMain(
             println!("  Far Cry 2 - systemdetection.dll replacement");
             println!("===========================================");
         }
+
+        // Apply Dunia.dll patches
+        patches::apply_patches();
     }
     1 // TRUE
 }
