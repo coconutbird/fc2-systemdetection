@@ -152,7 +152,7 @@ impl GearCPU {
         if RegOpenKeyExA(
             HKEY_LOCAL_MACHINE,
             PCSTR::from_raw(key_path.as_ptr()),
-            0,
+            Some(0),
             KEY_READ,
             &mut hkey,
         )

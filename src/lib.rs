@@ -10,7 +10,7 @@ pub use gear_score::GearScore;
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
-use windows::Win32::Foundation::{BOOL, HMODULE, TRUE};
+use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 /// DLL entry point
@@ -23,7 +23,7 @@ pub unsafe extern "system" fn DllMain(
     _hinst_dll: HMODULE,
     fdw_reason: u32,
     _lpv_reserved: *mut c_void,
-) -> BOOL {
+) -> i32 {
     if fdw_reason == DLL_PROCESS_ATTACH {
         #[cfg(debug_assertions)]
         {
@@ -33,7 +33,7 @@ pub unsafe extern "system" fn DllMain(
             println!("===========================================");
         }
     }
-    TRUE
+    1 // TRUE
 }
 
 /// Initialize console for debug output

@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 name = "systemdetection"
 
 [dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Console",
     "Win32_System_SystemServices",
