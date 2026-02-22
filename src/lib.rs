@@ -1,57 +1,63 @@
 //! Far Cry 2 systemdetection.dll drop-in replacement
 
-mod gear_cpu;
-mod gear_graphics;
-mod gear_hardware;
-mod gear_score;
+mod gear;
+mod patches;
 
-pub use gear_hardware::GearHardware;
-pub use gear_score::GearScore;
+pub use gear::GearHardware;
+pub use gear::GearScore;
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
-use windows::Win32::Foundation::{BOOL, HMODULE, TRUE};
+use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 /// DLL entry point
 ///
 /// # Safety
 /// Called by Windows when the DLL is loaded/unloaded.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllMain(
     _hinst_dll: HMODULE,
     fdw_reason: u32,
     _lpv_reserved: *mut c_void,
-) -> BOOL {
+) -> i32 {
     if fdw_reason == DLL_PROCESS_ATTACH {
         #[cfg(debug_assertions)]
-        {
+        unsafe {
             init_console();
+        }
+        #[cfg(debug_assertions)]
+        {
             println!("===========================================");
             println!("  Far Cry 2 - systemdetection.dll replacement");
             println!("===========================================");
         }
+
+        // Apply Dunia.dll patches
+        patches::apply_patches();
     }
-    TRUE
+    1 // TRUE
 }
 
 /// Initialize console for debug output
 #[cfg(debug_assertions)]
 unsafe fn init_console() {
-    use windows::core::PCSTR;
     use windows::Win32::System::Console::{AllocConsole, SetConsoleTitleA};
+    use windows::core::PCSTR;
 
-    let _ = AllocConsole();
-    let _ = SetConsoleTitleA(PCSTR::from_raw(c"FC2 SystemDetection".as_ptr() as *const u8));
+    unsafe {
+        let _ = AllocConsole();
+        let _ = SetConsoleTitleA(PCSTR::from_raw(c"FC2 SystemDetection".as_ptr() as *const u8));
 
-    extern "C" {
-        fn freopen(filename: *const i8, mode: *const i8, stream: *mut c_void) -> *mut c_void;
-        fn __acrt_iob_func(index: u32) -> *mut c_void;
+        unsafe extern "C" {
+            fn freopen(filename: *const i8, mode: *const i8, stream: *mut c_void) -> *mut c_void;
+            fn __acrt_iob_func(index: u32) -> *mut c_void;
+        }
+
+        freopen(c"CONOUT$".as_ptr(), c"w".as_ptr(), __acrt_iob_func(1)); // stdout
+        freopen(c"CONOUT$".as_ptr(), c"w".as_ptr(), __acrt_iob_func(2)); // stderr
     }
-
-    freopen(c"CONOUT$".as_ptr(), c"w".as_ptr(), __acrt_iob_func(1)); // stdout
-    freopen(c"CONOUT$".as_ptr(), c"w".as_ptr(), __acrt_iob_func(2)); // stderr
 }
 
 /// Global singleton for GearHardware
@@ -64,12 +70,13 @@ static GEAR_SCORE: OnceLock<Box<GearScore>> = OnceLock::new();
 ///
 /// # Safety
 /// This function is called from C code and returns a raw pointer
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn GetHardwareInstance() -> *mut GearHardware {
     let hardware = GEAR_HARDWARE.get_or_init(|| {
         println!("systemdetection: Creating GearHardware instance");
         Box::new(GearHardware::new())
     });
+
     hardware.as_ref() as *const GearHardware as *mut GearHardware
 }
 
@@ -77,11 +84,12 @@ pub unsafe extern "C" fn GetHardwareInstance() -> *mut GearHardware {
 ///
 /// # Safety
 /// This function is called from C code and returns a raw pointer
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn GetScoreInstance() -> *mut GearScore {
     let score = GEAR_SCORE.get_or_init(|| {
         println!("systemdetection: Creating GearScore instance");
         Box::new(GearScore::new())
     });
+
     score.as_ref() as *const GearScore as *mut GearScore
 }

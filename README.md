@@ -4,11 +4,24 @@
 [![Release](https://img.shields.io/github/v/release/coconutbird/fc2-systemdetection)](https://github.com/coconutbird/fc2-systemdetection/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Drop-in replacement for Far Cry 2's `systemdetection.dll`.
+Drop-in replacement for Far Cry 2's `systemdetection.dll` with bug fixes and quality-of-life improvements.
 
-## Why?
+## Features
+
+### CPU Crash Fix
 
 The original DLL crashes on systems with 32+ logical CPU cores due to a bug in the CPU topology detection code. This replacement fixes that issue.
+
+### Dunia Engine Patches
+
+Runtime patches applied to `Dunia.dll` (similar to [Far Cry 2 Multi Fixer](https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer)):
+
+| Patch                 | Description                                                   |
+| --------------------- | ------------------------------------------------------------- |
+| **Jackal Tapes Fix**  | Fixes incorrect tape recordings in the Southern map           |
+| **DevMode Unlock**    | Enables developer console commands                            |
+| **Predecessor Tapes** | Unlocks 7 bonus missions (originally tied to Ubisoft account) |
+| **Machetes Unlock**   | Unlocks 2 bonus machete skins                                 |
 
 ## Installation
 
