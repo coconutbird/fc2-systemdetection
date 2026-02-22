@@ -7,6 +7,7 @@
 //! All signature scans are performed upfront before any patches are applied,
 //! ensuring that patches don't corrupt signatures we haven't scanned yet.
 
+mod hooks;
 mod memory;
 mod sigscan;
 
@@ -135,6 +136,7 @@ pub fn apply_patches() {
     // IMPORTANT: Scan for ALL signatures BEFORE applying any patches
     // This prevents patches from corrupting signatures we haven't found yet
     let addrs = PatchAddresses::scan(base);
+    let hook_addrs = hooks::HookAddresses::scan(base);
 
     // Now apply patches using the cached addresses
     apply_jackal_tapes_fix(&addrs);
@@ -142,6 +144,12 @@ pub fn apply_patches() {
     apply_devmode_unlock(&addrs);
     apply_predecessor_tapes_unlock(&addrs);
     apply_machetes_unlock(&addrs);
+
+    // Install function hooks (for FOV slider, etc.)
+    if let Err(_e) = hooks::install_hooks(&hook_addrs) {
+        #[cfg(debug_assertions)]
+        println!("patches: Failed to install hooks: {:?}", _e);
+    }
 }
 
 /// Fix: Jackal Tapes - All tapes in Southern map play correct recordings
