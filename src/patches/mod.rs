@@ -1,273 +1,1036 @@
-//! Dunia.dll runtime patches
+//! Validated runtime patches for `Dunia.dll`.
 //!
-//! This module applies fixes to Dunia.dll at runtime, similar to Far Cry 2 Multi Fixer.
-//! Since systemdetection.dll is loaded by Dunia.dll before initialization completes,
-//! we can safely patch Dunia.dll from here.
-//!
-//! All signature scans are performed upfront before any patches are applied,
-//! ensuring that patches don't corrupt signatures we haven't scanned yet.
+//! Enabled patches are resolved and byte-validated before any write occurs.
+//! Signature searches are restricted to Portex-parsed PE sections, and every
+//! target accepts only its known original or already-patched bytes.
 
-mod hooks;
+mod config;
 mod memory;
+mod offline;
 mod sigscan;
 
-use memory::write_bytes;
-use sigscan::{Pattern, scan_module};
-use windows::Win32::System::LibraryLoader::GetModuleHandleA;
-use windows::core::PCSTR;
+pub use offline::{DuniaFileValidation, OfflinePatchState, ValidatedPatch, validate_dunia_file};
 
-/// Signature definitions
+use std::ffi::OsString;
+use std::fmt;
+use std::os::windows::ffi::OsStringExt;
+use std::path::PathBuf;
+
+use config::{ConfigLoad, ConfigSource, PatchConfig};
+use memory::{MemoryError, WriteState, validate_bytes, write_checked};
+use sigscan::{ModuleImage, Pattern, ScanError, ScanScope};
+use windows_sys::Win32::Foundation::HMODULE;
+use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleA};
+
+const STEAM_DUNIA_FILE_SIZE: u64 = 20_183_176;
+const RETAIL_DUNIA_FILE_SIZE: u64 = 19_412_104;
+const UBISOFT_DUNIA_FILE_SIZE: u64 = 20_184_168;
+
+// FoxAhead's Retail/GOG 1.03 target is VA 0x10048987 at preferred image base
+// 0x10000000. Use the RVA so relocation/ASLR does not affect the target.
+const RETAIL_PREDECESSOR_RVA: usize = 0x0004_8987;
+
+const STEAM_NO_BLINK_RVAS: [usize; 3] = [0x00E4_9D08, 0x00E1_15B8, 0x00E9_33B3];
+const RETAIL_NO_BLINK_RVAS: [usize; 3] = [0x00DC_1A94, 0x00D8_B3B0, 0x00E0_AFC2];
+
 mod signatures {
-    // Jackal Tapes: cmp byte ptr [esi+74h], 0 | jnz short | cmp ecx, edx | jnz
     pub const JACKAL_TAPES: &str = "80 7E 74 00 75 ?? 3B CA 75";
 
-    // DevMode: cmp byte ptr [ecx+offset], 0 | mov edx, [esp+arg] | jnz
-    pub const DEVMODE: &str = "80 79 ?? 00 8B 54 24 ?? 75";
+    // The final opcode is a wildcard so an already-patched JMP remains
+    // discoverable. Destination-byte validation accepts only JNZ or JMP.
+    pub const DEVMODE_ALWAYS_ON: &str = "80 79 ?? 00 8B 54 24 ?? ??";
 
-    // Predecessor Tapes: mov ecx, [ecx+0Ch] | test ecx, ecx | jz
-    // Function checks online service pointer, patch makes it always skip the null check
-    pub const PREDECESSOR_TAPES: &str = "8B 49 0C 85 C9 74 ?? 8B 44 24";
+    // Both branch bytes are wildcards for idempotent discovery.
+    pub const PREDECESSOR_TAPES_STEAM: &str = "8B 49 0C 85 C9 ?? ?? 8B 44 24";
 
-    // Machetes: sub esp, ?? | push ebx | lea eax, [esp+??] | push eax | push
-    // This is the prologue of IsMachetesUnlocked function
+    // This prologue is qualified by checking the known return instruction at
+    // +0x69. Multiple raw prologue matches are safe because exactly one
+    // validated destination is required.
     pub const MACHETES: &str = "83 EC ?? 53 8D 44 24 ?? 50 68";
 
-    // No Blinking Items: String literals to corrupt
-    pub const MESH_HIGHLIGHT: &str = "4D 65 73 68 5F 48 69 67 68 6C 69 67 68 74"; // "Mesh_Highlight"
-    pub const ARCH_BLINK: &str = "61 72 63 68 42 6C 69 6E 6B"; // "archBlink"
-    pub const SAVE_DISK: &str = "67 61 64 67 65 74 73 2E 4F 62 6A 65 63 74 69 76 65 49 63 6F 6E 73 2E 53 61 76 65 44 69 73 6B"; // "gadgets.ObjectiveIcons.SaveDisk"
+    // Mutation bytes are wildcards so already-patched strings remain
+    // discoverable and can be reported as idempotently applied.
+    pub const MESH_HIGHLIGHT: &str = "4D 65 73 68 ?? 48 69 67 68 6C 69 67 68 74";
+    pub const ARCH_BLINK: &str = "61 72 63 68 42 6C 69 6E ??";
+    pub const SAVE_DISK: &str = "67 61 64 67 65 74 73 2E 4F 62 6A 65 63 74 69 76 65 49 63 6F 6E 73 2E 53 61 76 65 44 69 73 6B ??";
 }
 
-/// Cached addresses from signature scans (found before patching)
-#[allow(dead_code)]
-struct PatchAddresses {
-    jackal_tapes: Option<usize>,
-    devmode: Option<usize>,
-    predecessor_tapes: Option<usize>,
-    machetes: Option<usize>,
-    mesh_highlight: Option<usize>,
-    arch_blink: Option<usize>,
-    save_disk: Option<usize>,
+/// Apply the configured patch set once runtime initialization is outside the
+/// Windows loader lock.
+pub fn initialize(self_module: HMODULE) {
+    let (config, configuration, configuration_warnings) = load_patch_config(self_module);
+    let mut report = run(config);
+    report.configuration = Some(configuration);
+    report.warnings = configuration_warnings;
+    emit_report(self_module, &report.to_string());
 }
 
-impl PatchAddresses {
-    /// Scan for all signatures upfront, before any patches are applied
-    fn scan(base: usize) -> Self {
-        #[cfg(debug_assertions)]
-        println!("patches: Scanning for all signatures...");
-
-        let jackal_tapes =
-            Pattern::parse(signatures::JACKAL_TAPES).and_then(|p| scan_module(base, &p));
-        let devmode = Pattern::parse(signatures::DEVMODE).and_then(|p| scan_module(base, &p));
-        let predecessor_tapes =
-            Pattern::parse(signatures::PREDECESSOR_TAPES).and_then(|p| scan_module(base, &p));
-        let machetes = Pattern::parse(signatures::MACHETES).and_then(|p| scan_module(base, &p));
-        let mesh_highlight =
-            Pattern::parse(signatures::MESH_HIGHLIGHT).and_then(|p| scan_module(base, &p));
-        let arch_blink = Pattern::parse(signatures::ARCH_BLINK).and_then(|p| scan_module(base, &p));
-        let save_disk = Pattern::parse(signatures::SAVE_DISK).and_then(|p| scan_module(base, &p));
-
-        #[cfg(debug_assertions)]
-        {
-            println!(
-                "patches:   Jackal Tapes:      {:?}",
-                jackal_tapes.map(|a| format!("0x{:08X}", a))
-            );
-            println!(
-                "patches:   DevMode:           {:?}",
-                devmode.map(|a| format!("0x{:08X}", a))
-            );
-            println!(
-                "patches:   Predecessor Tapes: {:?}",
-                predecessor_tapes.map(|a| format!("0x{:08X}", a))
-            );
-            println!(
-                "patches:   Machetes:          {:?}",
-                machetes.map(|a| format!("0x{:08X}", a))
-            );
-            println!(
-                "patches:   Mesh_Highlight:    {:?}",
-                mesh_highlight.map(|a| format!("0x{:08X}", a))
-            );
-            println!(
-                "patches:   archBlink:         {:?}",
-                arch_blink.map(|a| format!("0x{:08X}", a))
-            );
-            println!(
-                "patches:   SaveDisk:          {:?}",
-                save_disk.map(|a| format!("0x{:08X}", a))
+fn load_patch_config(self_module: HMODULE) -> (PatchConfig, String, Vec<String>) {
+    let dll_path = match module_path(self_module) {
+        Ok(path) => path,
+        Err(error) => {
+            return (
+                PatchConfig::default(),
+                format!("DLL path unavailable; using defaults ({error})"),
+                Vec::new(),
             );
         }
+    };
+    let Some(directory) = dll_path.parent() else {
+        return (
+            PatchConfig::default(),
+            "DLL directory unavailable; using defaults".to_owned(),
+            Vec::new(),
+        );
+    };
 
+    let ConfigLoad {
+        config,
+        path,
+        source,
+        warnings,
+    } = ConfigLoad::load(directory.join("fc2-systemdetection.ini"));
+    let description = match source {
+        ConfigSource::Loaded => format!("loaded {}", path.display()),
+        ConfigSource::MissingUsingDefaults => {
+            format!("{} not found; using defaults", path.display())
+        }
+        ConfigSource::ReadFailedUsingDefaults(error) => {
+            format!(
+                "could not read {}; using defaults ({error})",
+                path.display()
+            )
+        }
+    };
+
+    (config, description, warnings)
+}
+
+fn run(config: PatchConfig) -> PatchReport {
+    let mut report = PatchReport::new();
+
+    let dunia = unsafe { GetModuleHandleA(c"Dunia.dll".as_ptr() as *const u8) };
+    if dunia.is_null() {
+        report.fail_enabled(
+            &config,
+            format!(
+                "Dunia.dll is not loaded: {}",
+                std::io::Error::last_os_error()
+            ),
+        );
+        return report;
+    }
+
+    let image = match unsafe { ModuleImage::from_module(dunia) } {
+        Ok(image) => image,
+        Err(error) => {
+            report.fail_enabled(&config, format!("could not inspect Dunia.dll: {error}"));
+            return report;
+        }
+    };
+
+    report.image = Some(format!(
+        "base=0x{:08X}, SizeOfImage=0x{:X}",
+        image.base(),
+        image.size()
+    ));
+
+    let build = detect_build(dunia);
+    report.build = Some(build.to_string());
+
+    // Build and validate every enabled plan before applying any plan. This
+    // prevents one patch from changing a later patch's signature or guard.
+    let prepared = vec![
+        prepare_patch("jackal_tapes", config.jackal_tapes, || {
+            plan_jackal_tapes(&image)
+        }),
+        prepare_patch("devmode_always_on", config.devmode_always_on, || {
+            plan_devmode_always_on(&image)
+        }),
+        prepare_patch("predecessor_tapes", config.predecessor_tapes, || {
+            plan_predecessor_tapes(&image, &build)
+        }),
+        prepare_patch("machetes", config.machetes, || plan_machetes(&image)),
+        prepare_patch("no_blinking_items", config.no_blinking_items, || {
+            plan_no_blinking_items(&image, &build)
+        }),
+    ];
+
+    report.outcomes = prepared.into_iter().map(PreparedPatch::apply).collect();
+    report
+}
+
+fn plan_jackal_tapes(image: &ModuleImage) -> Result<PatchPlan, PatchError> {
+    let target = find_signature_target(
+        image,
+        signatures::JACKAL_TAPES,
+        ScanScope::Code,
+        5,
+        &[0x0A],
+        &[0x14],
+    )?;
+    PatchPlan::single(target, &[0x0A], &[0x14])
+}
+
+fn plan_devmode_always_on(image: &ModuleImage) -> Result<PatchPlan, PatchError> {
+    let target = find_signature_target(
+        image,
+        signatures::DEVMODE_ALWAYS_ON,
+        ScanScope::Code,
+        8,
+        &[0x75],
+        &[0xEB],
+    )?;
+    PatchPlan::single(target, &[0x75], &[0xEB])
+}
+
+fn plan_predecessor_tapes(
+    image: &ModuleImage,
+    build: &DuniaBuild,
+) -> Result<PatchPlan, PatchError> {
+    match build {
+        DuniaBuild::Retail => {
+            let target = image.address_from_rva(RETAIL_PREDECESSOR_RVA, 2, ScanScope::Code)?;
+            PatchPlan::single(target, &[0x8A, 0xC3], &[0xB0, 0x01])
+        }
+        DuniaBuild::Steam | DuniaBuild::Ubisoft | DuniaBuild::Unknown { .. } => {
+            let target = find_signature_target(
+                image,
+                signatures::PREDECESSOR_TAPES_STEAM,
+                ScanScope::Code,
+                5,
+                &[0x74, 0x16],
+                &[0xEB, 0x0E],
+            )?;
+            PatchPlan::single(target, &[0x74, 0x16], &[0xEB, 0x0E])
+        }
+    }
+}
+
+fn plan_machetes(image: &ModuleImage) -> Result<PatchPlan, PatchError> {
+    let target = find_signature_target(
+        image,
+        signatures::MACHETES,
+        ScanScope::Code,
+        0x69,
+        &[0x8A, 0xC3],
+        &[0xB0, 0x01],
+    )?;
+    PatchPlan::single(target, &[0x8A, 0xC3], &[0xB0, 0x01])
+}
+
+fn plan_no_blinking_items(
+    image: &ModuleImage,
+    build: &DuniaBuild,
+) -> Result<PatchPlan, PatchError> {
+    let known_rvas = match build {
+        DuniaBuild::Steam | DuniaBuild::Ubisoft => Some(STEAM_NO_BLINK_RVAS),
+        DuniaBuild::Retail => Some(RETAIL_NO_BLINK_RVAS),
+        DuniaBuild::Unknown { .. } => None,
+    };
+    if let Some([mesh_rva, arch_rva, save_rva]) = known_rvas {
+        return PatchPlan::new(vec![
+            checked_known_signature_write(
+                image,
+                signatures::MESH_HIGHLIGHT,
+                ScanScope::ReadOnlyData,
+                mesh_rva,
+                4,
+                b"_",
+                b".",
+            )?,
+            checked_known_signature_write(
+                image,
+                signatures::ARCH_BLINK,
+                ScanScope::ReadOnlyData,
+                arch_rva,
+                8,
+                b"k",
+                b".",
+            )?,
+            checked_known_signature_write(
+                image,
+                signatures::SAVE_DISK,
+                ScanScope::ReadOnlyData,
+                save_rva,
+                31,
+                b"\0",
+                b".",
+            )?,
+        ]);
+    }
+
+    let mesh_highlight = find_signature_target(
+        image,
+        signatures::MESH_HIGHLIGHT,
+        ScanScope::ReadOnlyData,
+        4,
+        b"_",
+        b".",
+    )?;
+    let arch_blink = find_signature_target(
+        image,
+        signatures::ARCH_BLINK,
+        ScanScope::ReadOnlyData,
+        8,
+        b"k",
+        b".",
+    )?;
+    let save_disk = find_signature_target(
+        image,
+        signatures::SAVE_DISK,
+        ScanScope::ReadOnlyData,
+        31,
+        b"\0",
+        b".",
+    )?;
+
+    PatchPlan::new(vec![
+        CheckedWrite::validated(mesh_highlight, b"_", b".")?,
+        CheckedWrite::validated(arch_blink, b"k", b".")?,
+        CheckedWrite::validated(save_disk, b"\0", b".")?,
+    ])
+}
+
+/// Validate both a known-build RVA and the complete signature context around
+/// it. This avoids treating common single-byte guards such as NUL as
+/// sufficient identification.
+fn checked_known_signature_write(
+    image: &ModuleImage,
+    signature: &str,
+    scope: ScanScope,
+    target_rva: usize,
+    target_offset: usize,
+    expected: &'static [u8],
+    replacement: &'static [u8],
+) -> Result<CheckedWrite, PatchError> {
+    let pattern = Pattern::parse(signature)?;
+    let start_rva =
+        target_rva
+            .checked_sub(target_offset)
+            .ok_or_else(|| PatchError::NoValidatedTarget {
+                signature: signature.to_owned(),
+                raw_matches: 0,
+                reasons: vec![format!(
+                    "known target RVA 0x{target_rva:08X} precedes offset {target_offset}"
+                )],
+            })?;
+    let expected_start = image.address_from_rva(start_rva, pattern.len(), scope)?;
+    let matches = image.scan(&pattern, scope);
+    if !matches.contains(&expected_start) {
+        return Err(PatchError::NoValidatedTarget {
+            signature: signature.to_owned(),
+            raw_matches: matches.len(),
+            reasons: vec![format!(
+                "no matching context at known start RVA 0x{start_rva:08X}"
+            )],
+        });
+    }
+
+    let target = image.address_from_rva(target_rva, expected.len(), scope)?;
+    CheckedWrite::validated(target, expected, replacement)
+}
+
+/// Resolve a single destination by combining a section-scoped signature with
+/// destination-byte validation.
+fn find_signature_target(
+    image: &ModuleImage,
+    signature: &str,
+    scope: ScanScope,
+    target_offset: usize,
+    expected: &'static [u8],
+    replacement: &'static [u8],
+) -> Result<usize, PatchError> {
+    let pattern = Pattern::parse(signature)?;
+    let raw_matches = image.scan(&pattern, scope);
+    if raw_matches.is_empty() {
+        return Err(PatchError::SignatureNotFound {
+            signature: signature.to_owned(),
+            scope,
+        });
+    }
+
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+
+    for start in &raw_matches {
+        let Some(target) = start.checked_add(target_offset) else {
+            rejected.push(format!("match 0x{start:08X}: target address overflow"));
+            continue;
+        };
+
+        if !image.contains_relative_target(*start, target, expected.len(), scope) {
+            rejected.push(format!(
+                "match 0x{start:08X}: target 0x{target:08X} leaves its matched PE section"
+            ));
+            continue;
+        }
+
+        match validate_bytes(target, expected, replacement) {
+            Ok(_) => accepted.push(target),
+            Err(error) => rejected.push(error.to_string()),
+        }
+    }
+
+    match accepted.as_slice() {
+        [target] => Ok(*target),
+        [] => Err(PatchError::NoValidatedTarget {
+            signature: signature.to_owned(),
+            raw_matches: raw_matches.len(),
+            reasons: rejected,
+        }),
+        _ => Err(PatchError::AmbiguousTarget {
+            signature: signature.to_owned(),
+            addresses: accepted,
+        }),
+    }
+}
+
+fn prepare_patch(
+    name: &'static str,
+    enabled: bool,
+    build: impl FnOnce() -> Result<PatchPlan, PatchError>,
+) -> PreparedPatch {
+    if enabled {
+        match build() {
+            Ok(plan) => PreparedPatch::Ready { name, plan },
+            Err(error) => PreparedPatch::Failed { name, error },
+        }
+    } else {
+        PreparedPatch::Disabled { name }
+    }
+}
+
+#[derive(Debug)]
+struct PatchPlan {
+    writes: Vec<CheckedWrite>,
+}
+
+impl PatchPlan {
+    fn single(
+        address: usize,
+        expected: &'static [u8],
+        replacement: &'static [u8],
+    ) -> Result<Self, PatchError> {
+        Self::new(vec![CheckedWrite::validated(
+            address,
+            expected,
+            replacement,
+        )?])
+    }
+
+    fn new(writes: Vec<CheckedWrite>) -> Result<Self, PatchError> {
+        if writes.is_empty() {
+            return Err(PatchError::EmptyPlan);
+        }
+        Ok(Self { writes })
+    }
+
+    fn apply(self) -> Result<WriteState, PatchError> {
+        let mut applied = 0;
+        let mut already_applied = 0;
+        let mut applied_writes = Vec::new();
+
+        for write in self.writes {
+            match write.apply() {
+                Ok(WriteState::Applied) => {
+                    applied += 1;
+                    applied_writes.push(write);
+                }
+                Ok(WriteState::AlreadyApplied) => already_applied += 1,
+                Err(error) => {
+                    let rollback_errors = applied_writes
+                        .into_iter()
+                        .rev()
+                        .filter_map(|applied_write| applied_write.rollback().err())
+                        .collect::<Vec<_>>();
+
+                    return if rollback_errors.is_empty() {
+                        Err(error)
+                    } else {
+                        Err(PatchError::PartialWrite {
+                            applied,
+                            error: Box::new(error),
+                            rollback_errors,
+                        })
+                    };
+                }
+            }
+        }
+
+        if applied == 0 && already_applied != 0 {
+            Ok(WriteState::AlreadyApplied)
+        } else {
+            Ok(WriteState::Applied)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CheckedWrite {
+    address: usize,
+    expected: &'static [u8],
+    replacement: &'static [u8],
+}
+
+impl CheckedWrite {
+    fn validated(
+        address: usize,
+        expected: &'static [u8],
+        replacement: &'static [u8],
+    ) -> Result<Self, PatchError> {
+        validate_bytes(address, expected, replacement)?;
+        Ok(Self {
+            address,
+            expected,
+            replacement,
+        })
+    }
+
+    fn apply(self) -> Result<WriteState, PatchError> {
+        Ok(write_checked(
+            self.address,
+            self.expected,
+            self.replacement,
+        )?)
+    }
+
+    fn rollback(self) -> Result<WriteState, PatchError> {
+        Ok(write_checked(
+            self.address,
+            self.replacement,
+            self.expected,
+        )?)
+    }
+}
+
+#[derive(Debug)]
+enum PreparedPatch {
+    Disabled {
+        name: &'static str,
+    },
+    Ready {
+        name: &'static str,
+        plan: PatchPlan,
+    },
+    Failed {
+        name: &'static str,
+        error: PatchError,
+    },
+}
+
+impl PreparedPatch {
+    fn apply(self) -> PatchOutcome {
+        match self {
+            Self::Disabled { name } => PatchOutcome {
+                name,
+                status: PatchStatus::Disabled,
+            },
+            Self::Failed { name, error } => PatchOutcome {
+                name,
+                status: PatchStatus::Failed(error.to_string()),
+            },
+            Self::Ready { name, plan } => PatchOutcome {
+                name,
+                status: match plan.apply() {
+                    Ok(WriteState::Applied) => PatchStatus::Applied,
+                    Ok(WriteState::AlreadyApplied) => PatchStatus::AlreadyApplied,
+                    Err(error) => PatchStatus::Failed(error.to_string()),
+                },
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+enum PatchError {
+    Scan(ScanError),
+    Memory(MemoryError),
+    SignatureNotFound {
+        signature: String,
+        scope: ScanScope,
+    },
+    NoValidatedTarget {
+        signature: String,
+        raw_matches: usize,
+        reasons: Vec<String>,
+    },
+    AmbiguousTarget {
+        signature: String,
+        addresses: Vec<usize>,
+    },
+    EmptyPlan,
+    PartialWrite {
+        applied: usize,
+        error: Box<PatchError>,
+        rollback_errors: Vec<PatchError>,
+    },
+}
+
+impl fmt::Display for PatchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scan(error) => error.fmt(formatter),
+            Self::Memory(error) => error.fmt(formatter),
+            Self::SignatureNotFound { signature, scope } => {
+                write!(
+                    formatter,
+                    "signature {signature:?} was not found in {scope:?} sections"
+                )
+            }
+            Self::NoValidatedTarget {
+                signature,
+                raw_matches,
+                reasons,
+            } => {
+                write!(
+                    formatter,
+                    "signature {signature:?} had {raw_matches} raw match(es), but no guarded target"
+                )?;
+                if !reasons.is_empty() {
+                    write!(formatter, ": {}", reasons.join("; "))?;
+                }
+                Ok(())
+            }
+            Self::AmbiguousTarget {
+                signature,
+                addresses,
+            } => write!(
+                formatter,
+                "signature {signature:?} resolved to multiple guarded targets: {}",
+                addresses
+                    .iter()
+                    .map(|address| format!("0x{address:08X}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::EmptyPlan => write!(formatter, "patch plan contains no writes"),
+            Self::PartialWrite {
+                applied,
+                error,
+                rollback_errors,
+            } => write!(
+                formatter,
+                "patch failed after {applied} write(s), and rollback was incomplete: {error}; rollback error(s): {}",
+                rollback_errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PatchError {}
+
+impl From<ScanError> for PatchError {
+    fn from(error: ScanError) -> Self {
+        Self::Scan(error)
+    }
+}
+
+impl From<MemoryError> for PatchError {
+    fn from(error: MemoryError) -> Self {
+        Self::Memory(error)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DuniaBuild {
+    Steam,
+    Retail,
+    Ubisoft,
+    Unknown { file_size: Option<u64> },
+}
+
+impl DuniaBuild {
+    fn from_file_size(file_size: Option<u64>) -> Self {
+        match file_size {
+            Some(STEAM_DUNIA_FILE_SIZE) => Self::Steam,
+            Some(RETAIL_DUNIA_FILE_SIZE) => Self::Retail,
+            Some(UBISOFT_DUNIA_FILE_SIZE) => Self::Ubisoft,
+            file_size => Self::Unknown { file_size },
+        }
+    }
+}
+
+impl fmt::Display for DuniaBuild {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Steam => write!(formatter, "Steam 1.03"),
+            Self::Retail => write!(formatter, "Retail/GOG 1.03"),
+            Self::Ubisoft => write!(formatter, "Ubisoft Connect 1.03"),
+            Self::Unknown {
+                file_size: Some(file_size),
+            } => write!(formatter, "unknown build (file size {file_size})"),
+            Self::Unknown { file_size: None } => {
+                write!(formatter, "unknown build (file size unavailable)")
+            }
+        }
+    }
+}
+
+fn detect_build(module: HMODULE) -> DuniaBuild {
+    let file_size = module_path(module)
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .map(|metadata| metadata.len());
+
+    DuniaBuild::from_file_size(file_size)
+}
+
+fn module_path(module: HMODULE) -> Result<PathBuf, String> {
+    let mut capacity = 260;
+
+    loop {
+        let mut buffer = vec![0u16; capacity];
+        let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) }
+            as usize;
+        if length == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+        }
+
+        if capacity >= 32_768 {
+            return Err("module path exceeds the Windows path limit".to_owned());
+        }
+        capacity = (capacity * 2).min(32_768);
+    }
+}
+
+#[derive(Debug)]
+struct PatchReport {
+    configuration: Option<String>,
+    build: Option<String>,
+    image: Option<String>,
+    outcomes: Vec<PatchOutcome>,
+    warnings: Vec<String>,
+}
+
+impl PatchReport {
+    fn new() -> Self {
         Self {
-            jackal_tapes,
-            devmode,
-            predecessor_tapes,
-            machetes,
-            mesh_highlight,
-            arch_blink,
-            save_disk,
+            configuration: None,
+            build: None,
+            image: None,
+            outcomes: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn fail_enabled(&mut self, config: &PatchConfig, reason: String) {
+        let settings = [
+            ("jackal_tapes", config.jackal_tapes),
+            ("devmode_always_on", config.devmode_always_on),
+            ("predecessor_tapes", config.predecessor_tapes),
+            ("machetes", config.machetes),
+            ("no_blinking_items", config.no_blinking_items),
+        ];
+
+        self.outcomes = settings
+            .into_iter()
+            .map(|(name, enabled)| PatchOutcome {
+                name,
+                status: if enabled {
+                    PatchStatus::Failed(reason.clone())
+                } else {
+                    PatchStatus::Disabled
+                },
+            })
+            .collect();
+    }
+}
+
+impl fmt::Display for PatchReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(formatter, "fc2-systemdetection patch report")?;
+        writeln!(
+            formatter,
+            "Configuration: {}",
+            self.configuration.as_deref().unwrap_or("unavailable")
+        )?;
+        writeln!(
+            formatter,
+            "Dunia build: {}",
+            self.build.as_deref().unwrap_or("unavailable")
+        )?;
+        writeln!(
+            formatter,
+            "Dunia image: {}",
+            self.image.as_deref().unwrap_or("unavailable")
+        )?;
+        for outcome in &self.outcomes {
+            writeln!(formatter, "{}: {}", outcome.name, outcome.status)?;
+        }
+        for warning in &self.warnings {
+            writeln!(formatter, "configuration warning: {warning}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct PatchOutcome {
+    name: &'static str,
+    status: PatchStatus,
+}
+
+#[derive(Debug)]
+enum PatchStatus {
+    Disabled,
+    Applied,
+    AlreadyApplied,
+    Failed(String),
+}
+
+impl fmt::Display for PatchStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Disabled => write!(formatter, "disabled"),
+            Self::Applied => write!(formatter, "applied"),
+            Self::AlreadyApplied => write!(formatter, "already applied"),
+            Self::Failed(reason) => write!(formatter, "FAILED: {reason}"),
         }
     }
 }
 
-/// Apply all enabled patches to Dunia.dll
-pub fn apply_patches() {
-    // Get Dunia.dll base address
-    let dunia_base =
-        unsafe { GetModuleHandleA(PCSTR::from_raw(c"Dunia.dll".as_ptr() as *const u8)) };
-
-    let Ok(dunia) = dunia_base else {
-        #[cfg(debug_assertions)]
-        println!("patches: Dunia.dll not loaded, skipping patches");
-        return;
-    };
-
-    if dunia.is_invalid() {
-        #[cfg(debug_assertions)]
-        println!("patches: Dunia.dll handle invalid, skipping patches");
-        return;
+fn emit_report(self_module: HMODULE, report: &str) {
+    let mut wide: Vec<u16> = report.encode_utf16().collect();
+    wide.push(0);
+    unsafe {
+        OutputDebugStringW(wide.as_ptr());
     }
 
-    let base = dunia.0 as usize;
-
     #[cfg(debug_assertions)]
-    println!("patches: Dunia.dll base = 0x{:08X}", base);
+    eprintln!("{report}");
 
-    // IMPORTANT: Scan for ALL signatures BEFORE applying any patches
-    // This prevents patches from corrupting signatures we haven't found yet
-    let addrs = PatchAddresses::scan(base);
-    let hook_addrs = hooks::HookAddresses::scan(base);
+    let log_path = module_path(self_module)
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(PathBuf::from))
+        })
+        .map(|directory| directory.join("fc2-systemdetection.log"));
 
-    // Now apply patches using the cached addresses
-    apply_jackal_tapes_fix(&addrs);
-    // apply_no_blinking_items(&addrs);
-    apply_devmode_unlock(&addrs);
-    apply_predecessor_tapes_unlock(&addrs);
-    apply_machetes_unlock(&addrs);
-
-    // Install function hooks (for FOV slider, etc.)
-    if let Err(_e) = hooks::install_hooks(&hook_addrs) {
-        #[cfg(debug_assertions)]
-        println!("patches: Failed to install hooks: {:?}", _e);
+    if let Some(log_path) = log_path
+        && let Err(error) = std::fs::write(&log_path, report)
+    {
+        let message = format!(
+            "fc2-systemdetection: could not write {}: {error}\0",
+            log_path.display()
+        );
+        let wide: Vec<u16> = message.encode_utf16().collect();
+        unsafe {
+            OutputDebugStringW(wide.as_ptr());
+        }
     }
 }
 
-/// Fix: Jackal Tapes - All tapes in Southern map play correct recordings
-///
-/// The bug: In the Southern map, some Jackal tape pickups play incorrect recordings.
-/// This is caused by an incorrect jump offset in the tape lookup logic.
-fn apply_jackal_tapes_fix(addrs: &PatchAddresses) {
-    let Some(addr) = addrs.jackal_tapes else {
-        #[cfg(debug_assertions)]
-        println!("patches: Jackal Tapes signature not found, skipping");
-        return;
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // The jump offset byte is at offset 5 in the pattern (after "75")
-    let patch_addr = addr + 5;
-
-    #[cfg(debug_assertions)]
-    println!("patches: Applying Jackal Tapes fix at 0x{:08X}", patch_addr);
-
-    // Change jump offset (add 0x10 to fix tape index calculation)
-    let current = unsafe { *(patch_addr as *const u8) };
-    write_bytes(patch_addr, &[current.wrapping_add(0x10)]);
-}
-
-/// Visual: No Blinking Items - Remove highlight blinking on interactables
-///
-/// Patches string literals to break the shader lookup, disabling the blinking effect.
-#[allow(dead_code)]
-fn apply_no_blinking_items(addrs: &PatchAddresses) {
-    // Patch "Mesh_Highlight" - change '_' to '.'
-    if let Some(addr) = addrs.mesh_highlight {
-        #[cfg(debug_assertions)]
-        println!("patches: Patching Mesh_Highlight at 0x{:08X}", addr);
-        write_bytes(addr + 4, &[0x2E]); // offset 4 = '_'
+    #[test]
+    fn maps_known_dunia_file_sizes() {
+        assert_eq!(
+            DuniaBuild::from_file_size(Some(STEAM_DUNIA_FILE_SIZE)),
+            DuniaBuild::Steam
+        );
+        assert_eq!(
+            DuniaBuild::from_file_size(Some(RETAIL_DUNIA_FILE_SIZE)),
+            DuniaBuild::Retail
+        );
+        assert_eq!(
+            DuniaBuild::from_file_size(Some(UBISOFT_DUNIA_FILE_SIZE)),
+            DuniaBuild::Ubisoft
+        );
+        assert_eq!(
+            DuniaBuild::from_file_size(Some(123)),
+            DuniaBuild::Unknown {
+                file_size: Some(123)
+            }
+        );
+        assert_eq!(
+            DuniaBuild::from_file_size(None),
+            DuniaBuild::Unknown { file_size: None }
+        );
     }
 
-    // Patch "archBlink" - change 'k' to '.'
-    if let Some(addr) = addrs.arch_blink {
-        #[cfg(debug_assertions)]
-        println!("patches: Patching archBlink at 0x{:08X}", addr);
-        write_bytes(addr + 8, &[0x2E]); // offset 8 = 'k'
+    #[test]
+    fn signature_target_accepts_original_and_patched_bytes() {
+        for displacement in [0x0A, 0x14] {
+            let memory = vec![0x80, 0x7E, 0x74, 0x00, 0x75, displacement, 0x3B, 0xCA, 0x75];
+            let base = memory.as_ptr() as usize;
+            let image = ModuleImage::for_test_section(base, 0, memory.clone(), ScanScope::Code);
+
+            let target = find_signature_target(
+                &image,
+                signatures::JACKAL_TAPES,
+                ScanScope::Code,
+                5,
+                &[0x0A],
+                &[0x14],
+            )
+            .unwrap();
+
+            assert_eq!(target, base + 5);
+        }
     }
 
-    // Patch "gadgets.ObjectiveIcons.SaveDisk" - change 'k' to '.'
-    if let Some(addr) = addrs.save_disk {
-        #[cfg(debug_assertions)]
-        println!("patches: Patching SaveDisk at 0x{:08X}", addr);
-        write_bytes(addr + 30, &[0x2E]); // offset 30 = 'k'
+    #[test]
+    fn signature_target_rejects_ambiguous_guarded_matches() {
+        let occurrence = [0x80, 0x7E, 0x74, 0x00, 0x75, 0x0A, 0x3B, 0xCA, 0x75];
+        let memory = occurrence
+            .into_iter()
+            .chain([0x90])
+            .chain(occurrence)
+            .collect::<Vec<_>>();
+        let image = ModuleImage::for_test_section(
+            memory.as_ptr() as usize,
+            0,
+            memory.clone(),
+            ScanScope::Code,
+        );
+
+        let error = find_signature_target(
+            &image,
+            signatures::JACKAL_TAPES,
+            ScanScope::Code,
+            5,
+            &[0x0A],
+            &[0x14],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            PatchError::AmbiguousTarget { addresses, .. } if addresses.len() == 2
+        ));
     }
-}
 
-/// Fix: DevMode Unlock - Enable developer console commands
-///
-/// Patches CConsoleService_IsCommandVisible to always skip the devmode check,
-/// making all "ConsoleDeveloperOnly" commands visible and usable.
-fn apply_devmode_unlock(addrs: &PatchAddresses) {
-    let Some(addr) = addrs.devmode else {
-        #[cfg(debug_assertions)]
-        println!("patches: DevMode signature not found, skipping");
-        return;
-    };
+    #[test]
+    fn signature_target_rejects_unexpected_destination_bytes() {
+        let memory = vec![0x80, 0x7E, 0x74, 0x00, 0x75, 0x24, 0x3B, 0xCA, 0x75];
+        let image = ModuleImage::for_test_section(
+            memory.as_ptr() as usize,
+            0,
+            memory.clone(),
+            ScanScope::Code,
+        );
 
-    // The jnz opcode is at offset 8 in the pattern
-    let jnz_addr = addr + 8;
+        let error = find_signature_target(
+            &image,
+            signatures::JACKAL_TAPES,
+            ScanScope::Code,
+            5,
+            &[0x0A],
+            &[0x14],
+        )
+        .unwrap_err();
 
-    #[cfg(debug_assertions)]
-    println!("patches: Applying DevMode unlock at 0x{:08X}", jnz_addr);
+        assert!(matches!(
+            error,
+            PatchError::NoValidatedTarget { raw_matches: 1, .. }
+        ));
+    }
 
-    // Change jnz (0x75) to jmp (0xEB) - always skip the devmode check
-    write_bytes(jnz_addr, &[0xEB]);
-}
+    #[test]
+    fn retail_predecessor_uses_relocation_safe_rva_and_guard() {
+        for bytes in [[0x8A, 0xC3], [0xB0, 0x01]] {
+            let memory = Vec::from(bytes);
+            let target = memory.as_ptr() as usize;
+            let base = target - RETAIL_PREDECESSOR_RVA;
+            let image = ModuleImage::for_test_section(
+                base,
+                RETAIL_PREDECESSOR_RVA,
+                memory.clone(),
+                ScanScope::Code,
+            );
 
-/// Unlock: Predecessor Tapes - Unlock 7 bonus missions
-///
-/// The predecessor tapes were originally tied to an online Ubisoft account.
-/// This patches IsPredecessorTapesUnlocked to always return true.
-fn apply_predecessor_tapes_unlock(addrs: &PatchAddresses) {
-    let Some(addr) = addrs.predecessor_tapes else {
-        #[cfg(debug_assertions)]
-        println!("patches: Predecessor Tapes signature not found, skipping");
-        return;
-    };
+            let plan = plan_predecessor_tapes(&image, &DuniaBuild::Retail).unwrap();
 
-    // Pattern: 8B 49 0C 85 C9 74 ?? 8B 44 24
-    // The jz opcode is at offset 5, jump offset at offset 6
-    // We change "74 ??" (jz) to "EB 0E" (jmp +14) to skip the null check
-    let jz_addr = addr + 5;
+            assert_eq!(plan.writes.len(), 1);
+            assert_eq!(plan.writes[0].address, target);
+        }
+    }
 
-    #[cfg(debug_assertions)]
-    println!(
-        "patches: Applying Predecessor Tapes unlock at 0x{:08X}",
-        jz_addr
-    );
+    #[test]
+    fn unknown_build_no_blinking_fallback_targets_the_save_disk_terminator() {
+        let mut memory = b"Mesh_Highlight\0archBlink\0gadgets.ObjectiveIcons.SaveDisk\0".to_vec();
+        let base = memory.as_mut_ptr() as usize;
+        let image = ModuleImage::for_test_section(base, 0, memory.clone(), ScanScope::ReadOnlyData);
+        let find = |needle: &[u8]| {
+            memory
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .unwrap()
+        };
+        let targets = [
+            find(b"Mesh_Highlight") + 4,
+            find(b"archBlink") + 8,
+            find(b"gadgets.ObjectiveIcons.SaveDisk") + 31,
+        ];
 
-    // Change jz (0x74) to jmp (0xEB), and set offset to 0x0E
-    write_bytes(jz_addr, &[0xEB, 0x0E]);
-}
+        let plan =
+            plan_no_blinking_items(&image, &DuniaBuild::Unknown { file_size: None }).unwrap();
+        assert_eq!(
+            plan.writes
+                .iter()
+                .map(|write| write.address - base)
+                .collect::<Vec<_>>(),
+            targets
+        );
+        assert_eq!(plan.apply().unwrap(), WriteState::Applied);
+        assert!(targets.iter().all(|offset| memory[*offset] == b'.'));
 
-/// Unlock: Machetes - Unlock 2 bonus machete skins
-///
-/// The bonus machetes were originally unlocked via a registry key.
-/// This patches IsMachetesUnlocked to always return true.
-fn apply_machetes_unlock(addrs: &PatchAddresses) {
-    let Some(addr) = addrs.machetes else {
-        #[cfg(debug_assertions)]
-        println!("patches: Machetes signature not found, skipping");
-        return;
-    };
+        let second =
+            plan_no_blinking_items(&image, &DuniaBuild::Unknown { file_size: None }).unwrap();
+        assert_eq!(second.apply().unwrap(), WriteState::AlreadyApplied);
+    }
 
-    // Signature is at function prologue (sub esp | push ebx | lea eax | push eax | push)
-    // Offset from function start to "mov al, bl" (8A C3) is 0x69 (105 bytes)
-    // We change "mov al, bl" to "mov al, 1" (B0 01) to always return true
-    let patch_addr = addr + 0x69;
+    #[test]
+    fn a_multi_write_plan_rolls_back_when_a_later_guard_changes() {
+        let mut first = vec![0x0A];
+        let mut second = vec![0x74];
+        let plan = PatchPlan::new(vec![
+            CheckedWrite::validated(first.as_mut_ptr() as usize, &[0x0A], &[0x14]).unwrap(),
+            CheckedWrite::validated(second.as_mut_ptr() as usize, &[0x74], &[0xEB]).unwrap(),
+        ])
+        .unwrap();
+        second[0] = 0x75;
 
-    #[cfg(debug_assertions)]
-    println!("patches: Applying Machetes unlock at 0x{:08X}", patch_addr);
+        assert!(plan.apply().is_err());
+        assert_eq!(first, [0x0A]);
+        assert_eq!(second, [0x75]);
+    }
 
-    // Change "mov al, bl" (8A C3) to "mov al, 1" (B0 01)
-    write_bytes(patch_addr, &[0xB0, 0x01]);
+    #[test]
+    fn disabled_patches_do_not_resolve_or_scan() {
+        let mut called = false;
+        let prepared = prepare_patch("disabled", false, || {
+            called = true;
+            Err(PatchError::EmptyPlan)
+        });
+
+        assert!(!called);
+        assert!(matches!(prepared, PreparedPatch::Disabled { .. }));
+    }
+
+    #[test]
+    fn patch_status_is_unambiguous() {
+        assert_eq!(PatchStatus::Disabled.to_string(), "disabled");
+        assert_eq!(PatchStatus::Applied.to_string(), "applied");
+        assert_eq!(PatchStatus::AlreadyApplied.to_string(), "already applied");
+        assert_eq!(
+            PatchStatus::Failed("bad bytes".to_owned()).to_string(),
+            "FAILED: bad bytes"
+        );
+    }
 }

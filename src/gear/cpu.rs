@@ -17,14 +17,14 @@
 
 use cppvtable::proc::{cppvtable, cppvtable_impl};
 use std::ffi::c_void;
-use windows::Win32::System::Registry::{
-    HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExA, RegQueryValueExA,
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::System::Registry::{
+    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExA, RegQueryValueExA,
 };
-use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows::Win32::System::Threading::{
+use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask, SetThreadAffinityMask,
 };
-use windows::core::PCSTR;
 
 /// GearBasicString - simplified string class at offset 0x28 of GearCPU
 #[repr(C)]
@@ -150,26 +150,25 @@ impl GearCPU {
         unsafe {
             let key_path = b"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0";
             let value_name = b"~MHz\0";
-            let mut hkey = std::mem::zeroed();
+            let mut hkey: HKEY = std::ptr::null_mut();
 
             if RegOpenKeyExA(
                 HKEY_LOCAL_MACHINE,
-                PCSTR::from_raw(key_path.as_ptr()),
-                Some(0),
+                key_path.as_ptr(),
+                0,
                 KEY_READ,
                 &mut hkey,
-            )
-            .is_ok()
+            ) == ERROR_SUCCESS
             {
                 let mut mhz: u32 = 0;
                 let mut size = 4u32;
                 let _ = RegQueryValueExA(
                     hkey,
-                    PCSTR::from_raw(value_name.as_ptr()),
-                    None,
-                    None,
-                    Some(&mut mhz as *mut u32 as *mut u8),
-                    Some(&mut size),
+                    value_name.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    &mut mhz as *mut u32 as *mut u8,
+                    &mut size,
                 );
                 let _ = RegCloseKey(hkey);
                 if mhz > 0 {
