@@ -3,17 +3,20 @@ name = "systemdetection"
 version = "0.1.0"
 edition = "2024"
 description = "Far Cry 2 systemdetection.dll drop-in replacement"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 name = "systemdetection"
 
 [dependencies]
-windows = { version = "0.62", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_SystemServices",
     "Win32_System_LibraryLoader",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
     "Win32_System_Registry",
@@ -21,12 +24,9 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ]}
 cppvtable = { git = "https://github.com/coconutbird/cppvtable.git" }
-minhook = "0.9"
+portex = "0.2"
 
 [profile.release]
 opt-level = 3
 lto = true
 strip = true
-
-[dev-dependencies]
-cargo-husky = { version = "1.5.0", features = ["precommit-hook", "user-hooks"] }

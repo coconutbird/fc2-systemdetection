@@ -7,6 +7,10 @@
 *.exp
 *.lib
 
+# Local runtime settings and diagnostics
+fc2-systemdetection.ini
+fc2-systemdetection.log
+
 # IDA Pro files
 *.i64
 *.id0

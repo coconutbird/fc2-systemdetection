@@ -7,8 +7,8 @@
 use cppvtable::proc::cppvtable;
 use cppvtable::proc::cppvtable_impl;
 use std::ffi::c_void;
-use windows::Win32::Foundation::RECT;
-use windows::Win32::UI::WindowsAndMessaging::{
+use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetDesktopWindow, GetSystemMetrics, GetWindowRect, SM_CMONITORS,
 };
 

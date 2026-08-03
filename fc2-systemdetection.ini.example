@@ -1,0 +1,9 @@
+# Copy this file beside systemdetection.dll as fc2-systemdetection.ini.
+# If the file is absent, these same defaults are used.
+
+[patches]
+jackal_tapes = true
+devmode_always_on = true
+predecessor_tapes = true
+machetes = true
+no_blinking_items = false
