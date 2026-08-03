@@ -4,20 +4,18 @@
 [![Release](https://img.shields.io/github/v/release/coconutbird/fc2-systemdetection)](https://github.com/coconutbird/fc2-systemdetection/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A 32-bit drop-in replacement for Far Cry 2's `systemdetection.dll`. It fixes
-the original DLL's high-core-count crash and applies a small set of validated
-runtime patches to `Dunia.dll`.
+A 32-bit drop-in replacement for Far Cry 2's `systemdetection.dll`. It
+supports high-core-count systems and applies a small set of validated runtime
+patches to `Dunia.dll`.
 
 ## Features
 
-The replacement CPU detector avoids the original crash on systems with 32 or
-more logical processors.
+CPU detection supports systems with 32 or more logical processors.
 
 Runtime patches are resolved inside
 [Portex](https://github.com/coconutbird/portex)-parsed PE sections. Every
 signature-relative destination must be unique and contain either the exact
-known original bytes or the exact replacement bytes before anything is
-written.
+expected game bytes or the exact patched bytes before anything is written.
 
 | Patch | Default | Behavior |
 | --- | --- | --- |
@@ -32,17 +30,12 @@ unknown build is never patched from an unguarded address: compatible
 signature-based patches may resolve, while unsupported targets fail closed
 and are reported.
 
-The DevMode patch is deliberately an always-on bypass. It does not add the
-`devmodeon`/`devmodeoff` console commands from Far Cry 2 Multi Fixer. FOV and
-launcher-only features such as affinity, FPS arguments, and intro skipping are
-also not implemented here.
-
 ## Installation
 
 1. Download `systemdetection.dll` from
    [Releases](https://github.com/coconutbird/fc2-systemdetection/releases).
-2. Back up the original `bin/systemdetection.dll`.
-3. Copy the replacement DLL into the game's `bin` directory.
+2. Back up the existing `bin/systemdetection.dll`.
+3. Copy the downloaded DLL into the game's `bin` directory.
 4. Launch the game.
 
 Common installation locations include:
@@ -93,7 +86,7 @@ The DLL is written to
 
 ## Development checks
 
-[prek](https://prek.j178.dev/) replaces the former Cargo Husky hook. If you
+[prek](https://prek.j178.dev/) manages the repository's commit checks. If you
 use [mise](https://mise.jdx.dev/), the checked-in `mise.toml` tracks the latest
 Rust and prek releases:
 
@@ -124,14 +117,6 @@ The test parses the file with Portex, reconstructs its sections in disposable
 heap memory, checks the real patch plans and known RVAs, and applies each patch
 twice to that copy to verify idempotency. It never loads or executes the game
 DLL.
-
-## Attribution
-
-The patch behavior and per-build address research were compared with
-[FoxAhead's Far Cry 2 Multi Fixer](https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer).
-The independent Rust implementation in this repository does not incorporate
-its Delphi source. See [`PATCH_COMPARISON.md`](PATCH_COMPARISON.md) for the
-comparison, limitations, and provenance notes.
 
 ## License
 
